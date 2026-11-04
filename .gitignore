@@ -1,0 +1,18 @@
+# Private project continuity records
+PROJECT_CHARTER.md
+PROJECT_STATE.md
+DEVELOPMENT_LOG.md
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Operating system
+.DS_Store
