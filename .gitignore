@@ -3,8 +3,11 @@ PROJECT_CHARTER.md
 PROJECT_STATE.md
 DEVELOPMENT_LOG.md
 
-# Python
-.venv/
+# Python environments
+.venv
+venv/
+
+# Python cache
 __pycache__/
 .pytest_cache/
 *.py[cod]
