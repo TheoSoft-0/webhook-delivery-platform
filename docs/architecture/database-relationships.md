@@ -69,22 +69,29 @@ classDiagram
         +Integer retry_cycle
     }
 
+
     class DeliveryAttempt {
         <<entity>>
         +UUID id
-        +UUID delivery_id
-        +Integer attempt_number
-        +Integer response_status
         +UUID outbox_message_id
-        +Integer retry_cycle
+        +Integer response_status
+        +String error_type
+        +DateTime started_at
+        +DateTime completed_at
     }
 
     class OutboxMessage {
         <<entity>>
         +UUID id
         +UUID delivery_id
+        +Integer retry_cycle
+        +Integer attempt_number
         +String status
+        +DateTime available_at
+        +DateTime published_at
+        +DateTime processed_at
     }
+
 
     Application "1" --> "0..*" ApiKey : has
     Application "1" --> "0..*" Destination : owns
@@ -94,8 +101,8 @@ classDiagram
 
     Event "1" --> "0..*" Delivery : creates
     Destination "1" --> "0..*" Delivery : receives
-    OutboxMessage "1" --> "0..1" DeliveryAttempt : triggers
-    Delivery "1" --> "1..*" OutboxMessage : schedules
+Delivery "1" --> "1..*" OutboxMessage : schedules
+OutboxMessage "1" --> "0..1" DeliveryAttempt : produces
     Delivery "1" --> "0..*" DeliveryAttempt : records
 ```
 
@@ -197,44 +204,46 @@ The combination of `event_id` and `destination_id` must be unique.
 
 The last requirement prevents one Application's Event from being delivered to another Application's Destination.
 
-### Delivery — DeliveryAttempt
+#### OutboxMessage — DeliveryAttempt
 
 **Relationship:**
 
-- One Delivery can have zero or many DeliveryAttempts.
-- Each DeliveryAttempt belongs to exactly one Delivery.
+- One OutboxMessage can produce zero or one DeliveryAttempt.
+- Each DeliveryAttempt belongs to exactly one OutboxMessage.
 
 **Database requirements:**
 
-- Every DeliveryAttempt must reference an existing Delivery.
-- `delivery_id` cannot be empty.
-- `attempt_number` must be greater than zero.
-- Attempt numbers must be unique within each Delivery.
+- Every DeliveryAttempt must reference an existing OutboxMessage.
+- `outbox_message_id` cannot be empty.
+- `outbox_message_id` must be unique.
+- An OutboxMessage cannot produce multiple DeliveryAttempts.
 - `response_status` may be empty when no HTTP response was received.
+- A completed attempt must contain an HTTP response status or an error type.
 
-Attempt numbers identify the order in which delivery attempts occurred.
-
-For example, one Delivery could have attempts numbered 1, 2, and 3.
+The retry cycle and attempt number belong to the OutboxMessage.
+They are not duplicated in DeliveryAttempt.
 
 ### Delivery — OutboxMessage
 
 **Relationship:**
 
-- Every Delivery has exactly one OutboxMessage.
-- Every OutboxMessage belongs to exactly one Delivery.
+- One Delivery has at least one OutboxMessage.
+- Each OutboxMessage belongs to exactly one Delivery.
+- A Delivery can have multiple OutboxMessages across attempts and retry cycles.
 
 **Database requirements:**
 
 - Every OutboxMessage must reference an existing Delivery.
 - `delivery_id` cannot be empty.
-- `delivery_id` must be unique.
-- The Delivery and its OutboxMessage must be created within the same database transaction.
+- `retry_cycle` must be greater than zero.
+- `attempt_number` must be greater than zero.
+- The combination of `delivery_id`, `retry_cycle`, and `attempt_number` must be unique.
+- `available_at` cannot be empty.
+- `status` must be pending, published, or completed.
 
-The transactional requirement is important.
+The initial OutboxMessage must be created in the same database transaction as its Delivery.
 
-It ensures that a Delivery cannot be saved without its corresponding OutboxMessage.
-
-An OutboxMessage records that a Delivery needs background processing.
+This ensures that database commits include the corresponding scheduling instruction.
 
 ## General Database Requirements
 
