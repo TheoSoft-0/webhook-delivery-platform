@@ -11,6 +11,7 @@ from webhook_delivery_platform.models.base import Base
 
 if TYPE_CHECKING:
     from webhook_delivery_platform.models.api_key import ApiKey
+    from webhook_delivery_platform.models.destination import Destination
 
 
 class Application(Base):
@@ -34,5 +35,9 @@ class Application(Base):
     )
 
     api_keys: Mapped[list[ApiKey]] = relationship(
+        back_populates="application",
+    )
+
+    destinations: Mapped[list[Destination]] = relationship(
         back_populates="application",
     )
