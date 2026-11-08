@@ -22,6 +22,7 @@ from webhook_delivery_platform.models.base import Base
 if TYPE_CHECKING:
     from webhook_delivery_platform.models.destination import Destination
     from webhook_delivery_platform.models.event import Event
+    from webhook_delivery_platform.models.outbox_message import OutboxMessage
 
 
 class Delivery(Base):
@@ -78,7 +79,9 @@ class Delivery(Base):
         Uuid(as_uuid=True),
         nullable=False,
     )
-
+    outbox_messages: Mapped[list[OutboxMessage]] = relationship(
+        back_populates="delivery",
+    )
     status: Mapped[str] = mapped_column(
         String(32),
         default="pending",
