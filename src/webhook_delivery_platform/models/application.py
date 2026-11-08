@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from webhook_delivery_platform.models.base import Base
+from webhook_delivery_platform.models.event import Event
 
 if TYPE_CHECKING:
     from webhook_delivery_platform.models.api_key import ApiKey
@@ -39,5 +40,8 @@ class Application(Base):
     )
 
     destinations: Mapped[list[Destination]] = relationship(
+        back_populates="application",
+    )
+    events: Mapped[list[Event]] = relationship(
         back_populates="application",
     )
