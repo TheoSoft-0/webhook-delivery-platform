@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from webhook_delivery_platform.models.base import Base
+from webhook_delivery_platform.models.delivery import Delivery
 
 if TYPE_CHECKING:
     from webhook_delivery_platform.models.application import Application
@@ -81,4 +82,8 @@ class Destination(Base):
 
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="destination",
+    )
+    deliveries: Mapped[list[Delivery]] = relationship(
+        back_populates="destination",
+        foreign_keys="Delivery.destination_id",
     )
