@@ -208,7 +208,10 @@ Worker processing must remain safe when that happens.
 
 ## 9. API Contract
 
-All application endpoints use the `/v1` prefix.
+All business API endpoints use the `/v1` prefix.
+
+Operational health endpoints are intentionally unversioned.
+They use `/health/live` and `/health/ready`.
 
 Authenticated endpoints require:
 

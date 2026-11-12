@@ -1,4 +1,3 @@
-
 from logging.config import fileConfig
 
 from alembic import context
@@ -6,7 +5,6 @@ from sqlalchemy import create_engine, pool
 
 from webhook_delivery_platform.config import get_settings
 from webhook_delivery_platform.models import Base
-
 
 config = context.config
 
