@@ -41,6 +41,11 @@ class ApiKey(Base):
         nullable=False,
     )
 
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     application: Mapped[Application] = relationship(
         back_populates="api_keys",
     )
