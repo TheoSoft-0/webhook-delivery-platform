@@ -11,6 +11,10 @@ from webhook_delivery_platform.api.authentication import (
 )
 from webhook_delivery_platform.api.dependencies import get_db_session
 from webhook_delivery_platform.models import Application
+from webhook_delivery_platform.services.destination_queries import (
+    get_application_destination,
+    list_application_destinations,
+)
 from webhook_delivery_platform.services.destination_registration import (
     register_destination,
 )
@@ -21,18 +25,81 @@ router = APIRouter(
 )
 
 
+class DestinationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    url: str
+    is_enabled: bool
+    created_at: datetime
+
+
 class DestinationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str
 
 
-class DestinationCreateResponse(BaseModel):
-    id: UUID
-    url: str
-    is_enabled: bool
-    created_at: datetime
+class DestinationCreateResponse(DestinationResponse):
     signing_secret: str
+
+
+@router.get(
+    "",
+    response_model=list[DestinationResponse],
+)
+def list_destinations(
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> list[DestinationResponse]:
+    """List destinations belonging to the authenticated application."""
+
+    destinations = list_application_destinations(
+        session=session,
+        application=application,
+    )
+
+    return [
+        DestinationResponse.model_validate(destination) for destination in destinations
+    ]
+
+
+@router.get(
+    "/{destination_id}",
+    response_model=DestinationResponse,
+)
+def get_destination(
+    destination_id: UUID,
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> DestinationResponse:
+    """Retrieve one destination belonging to the authenticated application."""
+
+    destination = get_application_destination(
+        session=session,
+        application=application,
+        destination_id=destination_id,
+    )
+
+    if destination is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Destination not found",
+        )
+
+    return DestinationResponse.model_validate(destination)
 
 
 @router.post(

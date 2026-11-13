@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +17,8 @@ from webhook_delivery_platform.security.api_keys import (
 )
 from webhook_delivery_platform.security.destination_secrets import (
     decrypt_signing_secret,
+    encrypt_signing_secret,
+    generate_signing_secret,
 )
 
 
@@ -46,6 +48,25 @@ def create_authenticated_application(session):
     session.flush()
 
     return application, raw_api_key
+
+
+def create_destination_record(
+    session,
+    application,
+    url,
+    is_enabled=True,
+):
+    destination = Destination(
+        application_id=application.id,
+        url=url,
+        signing_secret_ciphertext=encrypt_signing_secret(generate_signing_secret()),
+        is_enabled=is_enabled,
+    )
+
+    session.add(destination)
+    session.flush()
+
+    return destination
 
 
 def test_create_destination(client, db_session):
@@ -128,5 +149,150 @@ def test_create_destination_requires_authentication(client):
         "/v1/destinations",
         json={"url": "https://example.com/webhooks"},
     )
+
+    assert response.status_code == 401
+
+
+def test_list_destinations_returns_only_authenticated_applications_destinations(
+    client,
+    db_session,
+):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    another_application, _ = create_authenticated_application(db_session)
+
+    first_destination = create_destination_record(
+        db_session,
+        application,
+        "https://first.example.com/webhooks",
+    )
+
+    second_destination = create_destination_record(
+        db_session,
+        application,
+        "https://second.example.com/webhooks",
+        is_enabled=False,
+    )
+
+    foreign_destination = create_destination_record(
+        db_session,
+        another_application,
+        "https://foreign.example.com/webhooks",
+    )
+
+    response = client.get(
+        "/v1/destinations",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    returned_ids = {item["id"] for item in body}
+
+    assert returned_ids == {
+        str(first_destination.id),
+        str(second_destination.id),
+    }
+
+    assert str(foreign_destination.id) not in returned_ids
+
+    for item in body:
+        assert set(item) == {
+            "id",
+            "url",
+            "is_enabled",
+            "created_at",
+        }
+
+
+def test_list_destinations_returns_empty_list_when_application_has_none(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    response = client.get(
+        "/v1/destinations",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_destination_returns_owned_destination(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    response = client.get(
+        f"/v1/destinations/{destination.id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] == str(destination.id)
+    assert body["url"] == destination.url
+    assert body["is_enabled"] is True
+    assert body["created_at"] is not None
+
+    assert "signing_secret" not in body
+    assert "signing_secret_ciphertext" not in body
+
+
+def test_get_destination_rejects_another_applications_destination(
+    client,
+    db_session,
+):
+    _application, raw_api_key = create_authenticated_application(db_session)
+
+    another_application, _ = create_authenticated_application(db_session)
+
+    foreign_destination = create_destination_record(
+        db_session,
+        another_application,
+        "https://foreign.example.com/webhooks",
+    )
+
+    response = client.get(
+        f"/v1/destinations/{foreign_destination.id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Destination not found"
+
+
+def test_get_destination_returns_404_for_unknown_destination(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    response = client.get(
+        f"/v1/destinations/{uuid4()}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_list_destinations_requires_authentication(client):
+    response = client.get("/v1/destinations")
+
+    assert response.status_code == 401
+
+
+def test_get_destination_requires_authentication(client):
+    response = client.get(f"/v1/destinations/{uuid4()}")
 
     assert response.status_code == 401
