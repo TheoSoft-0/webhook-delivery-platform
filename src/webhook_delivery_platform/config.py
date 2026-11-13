@@ -1,6 +1,7 @@
 from functools import lru_cache
 
-from pydantic import SecretStr
+from cryptography.fernet import Fernet
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -21,6 +22,8 @@ class Settings(BaseSettings):
 
     migration_db_user: str
     migration_db_password: SecretStr
+
+    destination_encryption_key: SecretStr
 
     @property
     def app_database_url(self) -> URL:
@@ -43,6 +46,23 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_db,
         )
+
+    @field_validator("destination_encryption_key")
+    @classmethod
+    def validate_destination_encryption_key(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """Ensure the configured encryption key is a valid Fernet key."""
+
+        try:
+            Fernet(value.get_secret_value())
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError(
+                "DESTINATION_ENCRYPTION_KEY must be a valid Fernet key."
+            ) from exc
+
+        return value
 
 
 @lru_cache
