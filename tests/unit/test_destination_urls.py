@@ -108,3 +108,15 @@ def test_non_global_ip_addresses_are_rejected(address: str) -> None:
 
     with pytest.raises(ValueError, match="globally reachable unicast"):
         validate_destination_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[64:ff9b::a9fe:a9fe]/webhooks",
+        "http://[::a9fe:a9fe]/webhooks",
+    ],
+)
+def test_rejects_ipv6_transition_addresses(url):
+    with pytest.raises(ValueError):
+        validate_destination_url(url)

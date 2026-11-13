@@ -78,7 +78,7 @@ def validate_destination_url(url: str) -> str:
     except ValueError:
         normalized_hostname = _validate_domain_name(hostname)
     else:
-        if not address.is_global or address.is_multicast:
+        if not address.is_global or address.is_multicast or address.is_reserved:
             raise ValueError(
                 "Destination IP address must be a globally reachable unicast address."
             )
