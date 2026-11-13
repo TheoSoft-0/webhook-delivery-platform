@@ -11,6 +11,9 @@ from webhook_delivery_platform.api.authentication import (
 )
 from webhook_delivery_platform.api.dependencies import get_db_session
 from webhook_delivery_platform.models import Application
+from webhook_delivery_platform.services.destination_management import (
+    update_destination_enabled,
+)
 from webhook_delivery_platform.services.destination_queries import (
     get_application_destination,
     list_application_destinations,
@@ -38,6 +41,12 @@ class DestinationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str
+
+
+class DestinationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_enabled: bool
 
 
 class DestinationCreateResponse(DestinationResponse):
@@ -100,6 +109,49 @@ def get_destination(
         )
 
     return DestinationResponse.model_validate(destination)
+
+
+@router.patch(
+    "/{destination_id}",
+    response_model=DestinationResponse,
+)
+def update_destination(
+    destination_id: UUID,
+    request: DestinationUpdateRequest,
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> DestinationResponse:
+    """Enable or disable a destination belonging to the authenticated application."""
+
+    try:
+        destination = update_destination_enabled(
+            session=session,
+            application=application,
+            destination_id=destination_id,
+            is_enabled=request.is_enabled,
+        )
+
+        if destination is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Destination not found",
+            )
+
+        response = DestinationResponse.model_validate(destination)
+
+        session.commit()
+
+    except Exception:
+        session.rollback()
+        raise
+
+    return response
 
 
 @router.post(

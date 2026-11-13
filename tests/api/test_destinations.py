@@ -296,3 +296,113 @@ def test_get_destination_requires_authentication(client):
     response = client.get(f"/v1/destinations/{uuid4()}")
 
     assert response.status_code == 401
+
+
+def test_disable_destination(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    response = client.patch(
+        f"/v1/destinations/{destination.id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+        json={"is_enabled": False},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] == str(destination.id)
+    assert body["is_enabled"] is False
+    assert "signing_secret" not in body
+    assert "signing_secret_ciphertext" not in body
+
+    assert destination.is_enabled is False
+
+
+def test_enable_destination(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+        is_enabled=False,
+    )
+
+    response = client.patch(
+        f"/v1/destinations/{destination.id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+        json={"is_enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_enabled"] is True
+    assert destination.is_enabled is True
+
+
+def test_update_destination_rejects_another_applications_destination(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    another_application, _ = create_authenticated_application(db_session)
+
+    foreign_destination = create_destination_record(
+        db_session,
+        another_application,
+        "https://foreign.example.com/webhooks",
+    )
+
+    response = client.patch(
+        f"/v1/destinations/{foreign_destination.id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+        json={"is_enabled": False},
+    )
+
+    assert response.status_code == 404
+    assert foreign_destination.is_enabled is True
+
+
+def test_update_destination_returns_404_for_unknown_destination(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    response = client.patch(
+        f"/v1/destinations/{uuid4()}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+        json={"is_enabled": False},
+    )
+
+    assert response.status_code == 404
+
+
+def test_update_destination_requires_authentication(client, db_session):
+    response = client.patch(
+        f"/v1/destinations/{uuid4()}",
+        json={"is_enabled": False},
+    )
+
+    assert response.status_code == 401
+
+
+def test_update_destination_rejects_empty_request(client, db_session):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    destination_id = uuid4()
+
+    response = client.patch(
+        f"/v1/destinations/{destination_id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+        json={},
+    )
+
+    assert response.status_code == 422
