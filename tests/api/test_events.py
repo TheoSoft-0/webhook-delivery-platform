@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -389,3 +391,183 @@ def test_event_rejects_unauthenticated_request(client):
     )
 
     assert response.status_code == 401
+
+
+def test_get_event_returns_owned_event(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    create_destination_record(db_session, application)
+
+    submission_response = submit_event(client, raw_api_key)
+
+    event_id = submission_response.json()["id"]
+
+    response = client.get(
+        f"/v1/events/{event_id}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] == event_id
+    assert body["event_type"] == "order.created"
+    assert body["payload"] == {
+        "order_id": "123",
+        "amount": 49.99,
+    }
+    assert body["created_at"] is not None
+
+    assert "idempotency_key" not in body
+    assert "request_hash" not in body
+
+
+def test_get_event_returns_404_for_unknown_event(client, db_session):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    response = client.get(
+        f"/v1/events/{uuid4()}",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Event not found"
+
+
+def test_get_event_rejects_another_applications_event(client, db_session):
+    _, first_api_key = create_authenticated_application(
+        db_session,
+        name="First Application",
+    )
+
+    _, second_api_key = create_authenticated_application(
+        db_session,
+        name="Second Application",
+    )
+
+    submission_response = submit_event(
+        client,
+        first_api_key,
+    )
+
+    event_id = submission_response.json()["id"]
+
+    response = client.get(
+        f"/v1/events/{event_id}",
+        headers={"Authorization": f"Bearer {second_api_key}"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_get_event_requires_authentication(client):
+    response = client.get(f"/v1/events/{uuid4()}")
+
+    assert response.status_code == 401
+
+
+def test_list_event_deliveries_returns_owned_deliveries(
+    client,
+    db_session,
+):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    first_destination = create_destination_record(
+        db_session,
+        application,
+    )
+
+    second_destination = create_destination_record(
+        db_session,
+        application,
+    )
+
+    submission_response = submit_event(client, raw_api_key)
+
+    event_id = submission_response.json()["id"]
+
+    response = client.get(
+        f"/v1/events/{event_id}/deliveries",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body) == 2
+
+    returned_destination_ids = {delivery["destination_id"] for delivery in body}
+
+    assert returned_destination_ids == {
+        str(first_destination.id),
+        str(second_destination.id),
+    }
+
+    for delivery in body:
+        assert delivery["status"] == "pending"
+        assert delivery["retry_cycle"] == 1
+        assert delivery["created_at"] is not None
+
+
+def test_list_event_deliveries_returns_empty_list_when_none_exist(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    submission_response = submit_event(client, raw_api_key)
+
+    event_id = submission_response.json()["id"]
+
+    response = client.get(
+        f"/v1/events/{event_id}/deliveries",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_event_deliveries_returns_404_for_unknown_event(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    response = client.get(
+        f"/v1/events/{uuid4()}/deliveries",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_list_event_deliveries_rejects_another_applications_event(
+    client,
+    db_session,
+):
+    _, first_api_key = create_authenticated_application(
+        db_session,
+        name="First Application",
+    )
+
+    _, second_api_key = create_authenticated_application(
+        db_session,
+        name="Second Application",
+    )
+
+    submission_response = submit_event(
+        client,
+        first_api_key,
+    )
+
+    event_id = submission_response.json()["id"]
+
+    response = client.get(
+        f"/v1/events/{event_id}/deliveries",
+        headers={"Authorization": f"Bearer {second_api_key}"},
+    )
+
+    assert response.status_code == 404
