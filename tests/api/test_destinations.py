@@ -10,6 +10,7 @@ from webhook_delivery_platform.models import (
     ApiKey,
     Application,
     Destination,
+    Subscription,
 )
 from webhook_delivery_platform.security.api_keys import (
     generate_api_key,
@@ -406,3 +407,215 @@ def test_update_destination_rejects_empty_request(client, db_session):
     )
 
     assert response.status_code == 422
+
+
+def test_add_destination_subscription(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    response = client.put(
+        f"/v1/destinations/{destination.id}/subscriptions/payment.completed",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 204
+
+    subscription = db_session.scalar(
+        select(Subscription).where(
+            Subscription.destination_id == destination.id,
+            Subscription.event_type == "payment.completed",
+        )
+    )
+
+    assert subscription is not None
+
+
+def test_add_destination_subscription_is_idempotent(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    url = f"/v1/destinations/{destination.id}/subscriptions/payment.completed"
+
+    headers = {"Authorization": f"Bearer {raw_api_key}"}
+
+    first_response = client.put(url, headers=headers)
+    second_response = client.put(url, headers=headers)
+
+    assert first_response.status_code == 204
+    assert second_response.status_code == 204
+
+    subscriptions = db_session.scalars(
+        select(Subscription).where(
+            Subscription.destination_id == destination.id,
+            Subscription.event_type == "payment.completed",
+        )
+    ).all()
+
+    assert len(subscriptions) == 1
+
+
+def test_add_subscription_rejects_another_applications_destination(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    another_application, _ = create_authenticated_application(db_session)
+
+    foreign_destination = create_destination_record(
+        db_session,
+        another_application,
+        "https://foreign.example.com/webhooks",
+    )
+
+    response = client.put(
+        f"/v1/destinations/{foreign_destination.id}/subscriptions/payment.completed",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+
+    subscription = db_session.scalar(
+        select(Subscription).where(
+            Subscription.destination_id == foreign_destination.id,
+            Subscription.event_type == "payment.completed",
+        )
+    )
+
+    assert subscription is None
+
+
+def test_add_subscription_rejects_blank_event_type(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    response = client.put(
+        f"/v1/destinations/{destination.id}/subscriptions/%20%20%20",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_add_subscription_requires_authentication(client, db_session):
+    response = client.put(
+        f"/v1/destinations/{uuid4()}/subscriptions/payment.completed",
+    )
+
+    assert response.status_code == 401
+
+
+def test_delete_destination_subscription(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    subscription = Subscription(
+        destination=destination,
+        event_type="payment.completed",
+    )
+
+    db_session.add(subscription)
+    db_session.flush()
+
+    response = client.delete(
+        f"/v1/destinations/{destination.id}/subscriptions/payment.completed",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 204
+
+    remaining_subscription = db_session.scalar(
+        select(Subscription).where(
+            Subscription.destination_id == destination.id,
+            Subscription.event_type == "payment.completed",
+        )
+    )
+
+    assert remaining_subscription is None
+
+
+def test_delete_destination_subscription_is_idempotent(client, db_session):
+    application, raw_api_key = create_authenticated_application(db_session)
+
+    destination = create_destination_record(
+        db_session,
+        application,
+        "https://example.com/webhooks",
+    )
+
+    url = f"/v1/destinations/{destination.id}/subscriptions/payment.completed"
+
+    headers = {"Authorization": f"Bearer {raw_api_key}"}
+
+    first_response = client.delete(url, headers=headers)
+    second_response = client.delete(url, headers=headers)
+
+    assert first_response.status_code == 204
+    assert second_response.status_code == 204
+
+
+def test_delete_subscription_rejects_another_applications_destination(
+    client,
+    db_session,
+):
+    _, raw_api_key = create_authenticated_application(db_session)
+
+    another_application, _ = create_authenticated_application(db_session)
+
+    foreign_destination = create_destination_record(
+        db_session,
+        another_application,
+        "https://foreign.example.com/webhooks",
+    )
+
+    subscription = Subscription(
+        destination=foreign_destination,
+        event_type="payment.completed",
+    )
+
+    db_session.add(subscription)
+    db_session.flush()
+
+    response = client.delete(
+        f"/v1/destinations/{foreign_destination.id}/subscriptions/payment.completed",
+        headers={"Authorization": f"Bearer {raw_api_key}"},
+    )
+
+    assert response.status_code == 404
+
+    remaining_subscription = db_session.scalar(
+        select(Subscription).where(
+            Subscription.destination_id == foreign_destination.id,
+            Subscription.event_type == "payment.completed",
+        )
+    )
+
+    assert remaining_subscription is not None
+
+
+def test_delete_subscription_requires_authentication(client, db_session):
+    response = client.delete(
+        f"/v1/destinations/{uuid4()}/subscriptions/payment.completed",
+    )
+
+    assert response.status_code == 401

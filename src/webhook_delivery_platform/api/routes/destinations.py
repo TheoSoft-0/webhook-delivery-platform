@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,10 @@ from webhook_delivery_platform.services.destination_queries import (
 )
 from webhook_delivery_platform.services.destination_registration import (
     register_destination,
+)
+from webhook_delivery_platform.services.destination_subscriptions import (
+    add_destination_subscription,
+    remove_destination_subscription,
 )
 
 router = APIRouter(
@@ -137,19 +141,19 @@ def update_destination(
             is_enabled=request.is_enabled,
         )
 
-        if destination is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Destination not found",
-            )
-
-        response = DestinationResponse.model_validate(destination)
-
-        session.commit()
+        if destination is not None:
+            response = DestinationResponse.model_validate(destination)
+            session.commit()
 
     except Exception:
         session.rollback()
         raise
+
+    if destination is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Destination not found",
+        )
 
     return response
 
@@ -208,3 +212,97 @@ def create_destination(
         raise
 
     return response
+
+
+@router.put(
+    "/{destination_id}/subscriptions/{event_type}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def create_destination_subscription(
+    destination_id: UUID,
+    event_type: Annotated[str, Path(min_length=1, max_length=255)],
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> Response:
+    """Subscribe an application-owned destination to an event type."""
+
+    try:
+        destination_exists = add_destination_subscription(
+            session=session,
+            application=application,
+            destination_id=destination_id,
+            event_type=event_type,
+        )
+
+        if destination_exists:
+            session.commit()
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        session.rollback()
+        raise
+
+    if not destination_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Destination not found",
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/{destination_id}/subscriptions/{event_type}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_destination_subscription(
+    destination_id: UUID,
+    event_type: Annotated[str, Path(min_length=1, max_length=255)],
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> Response:
+    """Remove a subscription from an application-owned destination."""
+
+    try:
+        destination_exists = remove_destination_subscription(
+            session=session,
+            application=application,
+            destination_id=destination_id,
+            event_type=event_type,
+        )
+
+        if destination_exists:
+            session.commit()
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        session.rollback()
+        raise
+
+    if not destination_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Destination not found",
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
