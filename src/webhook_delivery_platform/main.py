@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 
+from webhook_delivery_platform.api.routes.deliveries import (
+    router as deliveries_router,
+)
 from webhook_delivery_platform.api.routes.destinations import (
     router as destinations_router,
 )
@@ -20,6 +23,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(destinations_router)
     app.include_router(events_router)
+    app.include_router(deliveries_router)
     return app
 
 
