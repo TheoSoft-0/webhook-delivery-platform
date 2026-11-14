@@ -1,0 +1,35 @@
+# Private project continuity records
+PROJECT_CHARTER.md
+PROJECT_STATE.md
+DEVELOPMENT_LOG.md
+
+# Python environments
+.venv
+venv/
+
+# Python cache
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Operating system
+.DS_Store
+
+apiKey.txt
+
+# database ID: 6bfc5c6f-2184-450c-a0a2-ec5c6785a750
+
+#Previous active keys: revoked
+#New API key ID: f1603e16-0d6d-46e1-af7e-334655e20e08
+#New API key (shown once): wdp_uWrSYtddlsn564SI7RKzurnbtlaL4Y-SFoGmKjgejMc
+
+# permanent encryption key: 1KnQGNubZT1P9y_aMFBb3U8t4y9qSUPDhD_JIjx5ECo=
+
+# openssl rand -hex 32 POSTGRES_PASSWORD=3d1827d73b6d540938551e590585c76347894caee904291a067ffc964e98ddd2
+# openssl rand -hex 32 APP_DB_PASSWORD=3d1827d73b6d540938551e590585c76347894caee904291a067ffc964e98ddd2
+# openssl rand -hex 32 MIGRATION_DB_PASSWORD=3d1827d73b6d540938551e590585c76347894caee904291a067ffc964e98ddd2
