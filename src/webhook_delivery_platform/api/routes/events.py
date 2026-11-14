@@ -11,6 +11,10 @@ from webhook_delivery_platform.api.authentication import (
 )
 from webhook_delivery_platform.api.dependencies import get_db_session
 from webhook_delivery_platform.models import Application
+from webhook_delivery_platform.services.event_queries import (
+    get_application_event,
+    list_application_event_deliveries,
+)
 from webhook_delivery_platform.services.event_submission import (
     IdempotencyConflictError,
     submit_event,
@@ -34,6 +38,25 @@ class EventCreateResponse(BaseModel):
     event_type: str
     created_at: datetime
     delivery_count: int
+
+
+class EventInspectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    event_type: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class EventDeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    destination_id: UUID
+    status: str
+    retry_cycle: int
+    created_at: datetime
 
 
 @router.post(
@@ -97,3 +120,67 @@ def create_event(
         raise
 
     return response
+
+
+@router.get(
+    "/{event_id}",
+    response_model=EventInspectionResponse,
+)
+def get_event(
+    event_id: UUID,
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> EventInspectionResponse:
+    """Retrieve an event belonging to the authenticated application."""
+
+    event = get_application_event(
+        session=session,
+        application=application,
+        event_id=event_id,
+    )
+
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event not found",
+        )
+
+    return EventInspectionResponse.model_validate(event)
+
+
+@router.get(
+    "/{event_id}/deliveries",
+    response_model=list[EventDeliveryResponse],
+)
+def list_event_deliveries(
+    event_id: UUID,
+    application: Annotated[
+        Application,
+        Depends(get_current_application),
+    ],
+    session: Annotated[
+        Session,
+        Depends(get_db_session),
+    ],
+) -> list[EventDeliveryResponse]:
+    """List deliveries belonging to an application-owned event."""
+
+    deliveries = list_application_event_deliveries(
+        session=session,
+        application=application,
+        event_id=event_id,
+    )
+
+    if deliveries is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event not found",
+        )
+
+    return [EventDeliveryResponse.model_validate(delivery) for delivery in deliveries]
