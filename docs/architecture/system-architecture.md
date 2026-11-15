@@ -206,6 +206,217 @@ The dispatcher may publish the same message more than once.
 
 Worker processing must remain safe when that happens.
 
+### 8.1 Outbox Dispatcher
+
+The Outbox Dispatcher runs independently of FastAPI.
+
+It selects pending OutboxMessages whose available_at timestamp has arrived.
+
+Messages are selected in small batches using PostgreSQL FOR UPDATE SKIP LOCKED.
+
+This prevents multiple dispatcher instances from selecting the same locked records simultaneously.
+
+The dispatcher publishes each OutboxMessage ID through Celery and Redis.
+
+After successful publication, the dispatcher marks the message as published and records published_at.
+
+The database transaction is committed after publication.
+
+If publication fails, the message remains pending and can be published again.
+
+A crash after Redis accepts a job but before PostgreSQL commits may produce duplicate jobs.
+
+Worker processing must therefore remain idempotent.
+
+The dispatcher also periodically checks for published messages that have not been claimed by a worker.
+
+Stale messages can be published again to recover work lost from the queue.
+
+#### Additional dispatcher recovery rules
+
+The `published_at` field records the most recent successful publication time.
+
+A published message becomes eligible for republishing when its publication timestamp exceeds a configured recovery interval and no valid worker lease exists.
+
+The dispatcher must not republish a message with an unexpired worker lease.
+
+The dispatcher locks each message before republishing it.
+
+After successful republishing, `published_at` is updated.
+
+Broker publication must use a bounded timeout.
+
+Dispatcher batches must remain small enough to avoid holding database locks unnecessarily.
+
+### 8.2 Worker Ownership and Leases
+
+An OutboxMessage can be owned by one worker at a time.
+
+Worker ownership is represented by:
+
+- lease_token: UUID identifying the current owner.
+- lease_expires_at: Timestamp defining when ownership expires.
+
+Both fields must either be NULL or contain values.
+
+Leases are stored on OutboxMessage.
+
+Workers acquire leases using atomic PostgreSQL operations.
+
+Workers must verify their lease token before recording processing results.
+
+A worker with an expired or replaced lease cannot update the Delivery or OutboxMessage.
+
+Duplicate jobs received while another worker holds a valid lease are ignored.
+
+PostgreSQL calculates lease expiration timestamps and validates lease ownership.
+
+Application server clocks are not used for lease expiration decisions.
+
+#### Additional worker ownership rules
+
+Workers must acquire a PostgreSQL row lock before inspecting an OutboxMessage or attempting to acquire its lease.
+
+This prevents workers from observing an outdated message status while the dispatcher transaction is still committing.
+
+Lease ownership is valid only when both conditions hold:
+
+- The worker's lease token matches the current database token.
+- The lease expiration timestamp is later than the current PostgreSQL time.
+
+All worker result updates must enforce both conditions.
+The initial implementation does not renew worker leases.
+
+The HTTP request timeout must be shorter than the Celery hard task time limit.
+
+The Celery hard task time limit must be shorter than the lease duration.
+
+### 8.3 Delivery Attempts and Worker Recovery
+
+Each OutboxMessage can have at most one DeliveryAttempt.
+
+The DeliveryAttempt represents one individual HTTP delivery attempt.
+
+Its retry_cycle and attempt_number are obtained through its associated OutboxMessage.
+
+If a worker loses its lease while its DeliveryAttempt remains unfinished, the unfinished attempt is recorded as interrupted.
+
+The old OutboxMessage is marked completed.
+
+A subsequent retry creates a new OutboxMessage.
+
+Previous DeliveryAttempts remain available for inspection.
+
+If the maximum automatic attempts have been exhausted, the Delivery becomes permanently_failed.
+The recovery transaction also updates the Delivery status.
+
+If another automatic attempt is permitted, the Delivery status becomes scheduled.
+
+If no automatic attempts remain, the Delivery status becomes permanently_failed.
+
+The completed OutboxMessage receives a processed_at timestamp.
+
+The old OutboxMessage lease_token and lease_expires_at fields are cleared.
+
+All recovery changes are committed within one PostgreSQL transaction.
+
+#### Additional worker recovery rules
+
+An expired attempt is not resumed as the same HTTP delivery attempt.
+
+The unfinished DeliveryAttempt is marked as interrupted using an error_type and completion timestamp.
+
+The old OutboxMessage is marked completed.
+
+A new OutboxMessage is created for the next attempt when the retry budget permits.
+
+The next message retains the current retry_cycle and increments attempt_number.
+
+Its available_at timestamp follows the exponential backoff policy.
+
+Worker interruption counts as an attempt because the external HTTP request might already have reached its destination.
+
+If no automatic attempts remain, the Delivery becomes permanently_failed.
+
+### 8.4 Worker Processing
+
+Before sending an HTTP request, the worker locks the OutboxMessage and checks its status, lease, and existing DeliveryAttempt.
+
+The worker handles the possible states as follows:
+
+- A pending message is not processed. The Celery task is acknowledged.
+- A completed message is ignored. The Celery task is acknowledged.
+- A published message with a valid lease is ignored. Another worker owns it.
+- A published message without a lease or existing DeliveryAttempt can be claimed.
+- A published message with an expired lease and an unfinished DeliveryAttempt requires recovery.
+
+Recovery completes the old OutboxMessage and schedules a new attempt when permitted.
+
+The worker must not send another HTTP request using the recovered OutboxMessage.
+
+Any other combination of message status, lease, and attempt state is an invariant violation.
+
+An invariant violation means the database contains a combination of values that should never occur.
+
+The worker must not send an HTTP request when an invariant violation is detected.
+The worker:
+
+1. Acquires the OutboxMessage lease.
+2. Creates its DeliveryAttempt.
+3. Changes the Delivery status to processing.
+4. Sends the HTTP POST request outside the database transaction.
+5. Verifies lease ownership.
+6. Records the response or network error.
+7. Updates the Delivery status.
+8. Completes the OutboxMessage.
+9. Creates a subsequent OutboxMessage when another retry is required.
+
+The result recording and related database state changes happen within one PostgreSQL transaction.
+
+### 8.5 Broker and Worker Recovery
+
+Celery uses late acknowledgement.
+
+A task is acknowledged after its worker processing finishes.
+
+The worker must commit its database outcome before acknowledging the task.
+
+The database outcome may represent HTTP success, a scheduled retry, or permanent failure.
+
+Worker process termination must allow unfinished jobs to be redelivered.
+
+Redis persistence is enabled for local deployments.
+
+The Redis visibility timeout must exceed the configured maximum task execution time.
+
+Duplicate jobs are expected under at-least-once processing.
+
+The worker must prevent duplicate database effects.
+
+Exactly-once HTTP delivery is not guaranteed.
+
+### 8.6 Automatic Retry Scheduling
+
+Each retry cycle allows a maximum of five automatic HTTP delivery attempts.
+
+The initial delay is two seconds.
+
+Subsequent delays double until reaching five minutes.
+
+Every automatic retry creates a new OutboxMessage.
+
+The new message retains the current retry_cycle and increments attempt_number.
+
+A successful HTTP 2xx response completes the Delivery.
+
+Temporary failures are retried when attempts remain.
+
+Permanent HTTP failures immediately mark the Delivery as permanently_failed.
+
+When automatic attempts are exhausted, the Delivery becomes permanently_failed.
+
+Manual retry starts a new retry_cycle with attempt_number set to one.
+
 ## 9. API Contract
 
 All business API endpoints use the `/v1` prefix.
@@ -349,7 +560,7 @@ These details will be finalised during implementation:
 - Exact database column types and indexes.
 - Exact Celery configuration.
 - Exact worker concurrency settings.
-- Recovery of workers interrupted during delivery.
+- Exact worker recovery timing and lease duration.
 - Logging structure and operational metrics.
 - API pagination.
 - Exact environment variable names.
