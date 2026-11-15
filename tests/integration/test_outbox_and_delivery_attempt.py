@@ -440,3 +440,79 @@ def test_delivery_attempt_rejects_completion_before_start(
 
     with pytest.raises(IntegrityError):
         db_session.flush()
+
+
+def test_outbox_accepts_valid_worker_lease(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    published_at = datetime.now(UTC)
+    lease_token = uuid4()
+    lease_expires_at = published_at + timedelta(minutes=1)
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        status="published",
+        published_at=published_at,
+        lease_token=lease_token,
+        lease_expires_at=lease_expires_at,
+    )
+
+    db_session.add(message)
+    db_session.flush()
+
+    assert message.lease_token == lease_token
+    assert message.lease_expires_at == lease_expires_at
+
+
+@pytest.mark.parametrize(
+    ("lease_token", "lease_expires_at"),
+    [
+        (uuid4(), None),
+        (None, datetime.now(UTC)),
+    ],
+)
+def test_outbox_rejects_incomplete_worker_lease(
+    db_session: Session,
+    lease_token,
+    lease_expires_at,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        status="published",
+        published_at=datetime.now(UTC),
+        lease_token=lease_token,
+        lease_expires_at=lease_expires_at,
+    )
+
+    db_session.add(message)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+@pytest.mark.parametrize("status", ["pending", "completed"])
+def test_outbox_rejects_worker_lease_for_non_published_message(
+    db_session: Session,
+    status: str,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    now = datetime.now(UTC)
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        status=status,
+        published_at=None if status == "pending" else now,
+        processed_at=None if status == "pending" else now + timedelta(seconds=1),
+        lease_token=uuid4(),
+        lease_expires_at=now + timedelta(minutes=1),
+    )
+
+    db_session.add(message)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()

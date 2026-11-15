@@ -70,6 +70,21 @@ class OutboxMessage(Base):
             """,
             name="ck_outbox_messages_status_timestamps",
         ),
+        CheckConstraint(
+            """
+            (
+                lease_token IS NULL
+                AND lease_expires_at IS NULL
+            )
+            OR
+            (
+                status = 'published'
+                AND lease_token IS NOT NULL
+                AND lease_expires_at IS NOT NULL
+            )
+            """,
+            name="ck_outbox_messages_lease_state",
+        ),
         Index(
             "ix_outbox_messages_status_available_at",
             "status",
@@ -122,6 +137,16 @@ class OutboxMessage(Base):
     )
 
     processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    lease_token: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=True,
+    )
+
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
