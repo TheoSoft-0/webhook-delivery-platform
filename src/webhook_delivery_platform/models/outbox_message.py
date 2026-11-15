@@ -131,6 +131,11 @@ class OutboxMessage(Base):
         nullable=False,
     )
 
+    next_publish_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

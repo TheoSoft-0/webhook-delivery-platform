@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,12 @@ from webhook_delivery_platform.models import (
     Destination,
     Event,
     OutboxMessage,
+)
+from webhook_delivery_platform.services.message_publisher import (
+    MessagePublishError,
+)
+from webhook_delivery_platform.services.outbox_dispatch import (
+    dispatch_outbox_messages,
 )
 
 
@@ -88,6 +95,7 @@ def test_outbox_message_belongs_to_delivery(
     assert message.status == "pending"
     assert message.available_at is not None
     assert message.delivery_attempt is None
+    assert message.next_publish_at is None
 
 
 def test_outbox_rejects_duplicate_scheduled_attempt(
@@ -516,3 +524,322 @@ def test_outbox_rejects_worker_lease_for_non_published_message(
 
     with pytest.raises(IntegrityError):
         db_session.flush()
+
+
+class RecordingPublisher:
+    """Test publisher that records publication attempts."""
+
+    def __init__(
+        self,
+        failing_message_ids: set[UUID] | None = None,
+    ) -> None:
+        self.attempted_message_ids: list[UUID] = []
+        self.published_message_ids: list[UUID] = []
+        self.failing_message_ids = failing_message_ids or set()
+
+    def publish(self, message_id: UUID) -> None:
+        self.attempted_message_ids.append(message_id)
+
+        if message_id in self.failing_message_ids:
+            raise MessagePublishError("Broker unavailable.")
+
+        self.published_message_ids.append(message_id)
+
+
+def test_dispatch_publishes_due_pending_message(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+    message = OutboxMessage(delivery_id=delivery.id)
+
+    db_session.add(message)
+    db_session.flush()
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(seconds=30),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    db_session.flush()
+    db_session.refresh(message)
+
+    assert result.published_count == 1
+    assert result.failed_count == 0
+    assert publisher.published_message_ids == [message.id]
+    assert message.next_publish_at is None
+    assert message.status == "published"
+    assert message.published_at is not None
+    assert message.last_error is None
+
+
+def test_dispatch_skips_pending_message_not_yet_available(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        available_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    db_session.add(message)
+    db_session.flush()
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(seconds=30),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    assert result.published_count == 0
+    assert result.failed_count == 0
+    assert publisher.published_message_ids == []
+    assert message.status == "pending"
+
+
+def test_dispatch_republishes_stale_message_without_lease(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    old_published_at = datetime.now(UTC) - timedelta(minutes=2)
+
+    message = create_published_message(
+        db_session,
+        delivery,
+        published_at=old_published_at,
+    )
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(minutes=1),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    db_session.flush()
+    db_session.refresh(message)
+
+    assert result.published_count == 1
+    assert publisher.published_message_ids == [message.id]
+
+    assert message.status == "published"
+    assert message.published_at > old_published_at
+
+
+def test_dispatch_skips_stale_message_with_active_lease(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    now = db_session.scalar(select(func.clock_timestamp()))
+
+    assert now is not None
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        status="published",
+        published_at=now - timedelta(minutes=2),
+        lease_token=uuid4(),
+        lease_expires_at=now + timedelta(minutes=1),
+    )
+
+    db_session.add(message)
+    db_session.flush()
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(minutes=1),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    assert result.published_count == 0
+    assert publisher.published_message_ids == []
+    assert message.status == "published"
+
+
+def test_dispatch_skips_stale_message_during_publication_cooldown(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    now = db_session.scalar(select(func.clock_timestamp()))
+
+    assert now is not None
+
+    message = create_published_message(
+        db_session,
+        delivery,
+        published_at=now - timedelta(minutes=2),
+    )
+
+    message.next_publish_at = now + timedelta(minutes=5)
+    db_session.flush()
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(minutes=1),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    assert result.published_count == 0
+    assert result.failed_count == 0
+    assert publisher.attempted_message_ids == []
+    assert message.status == "published"
+
+
+def test_dispatch_republishes_message_with_expired_lease(
+    db_session: Session,
+) -> None:
+    delivery = create_delivery(db_session)
+
+    now = db_session.scalar(select(func.clock_timestamp()))
+
+    assert now is not None
+    lease_token = uuid4()
+    lease_expires_at = now - timedelta(seconds=5)
+
+    message = OutboxMessage(
+        delivery_id=delivery.id,
+        status="published",
+        published_at=now - timedelta(minutes=2),
+        lease_token=lease_token,
+        lease_expires_at=lease_expires_at,
+    )
+
+    db_session.add(message)
+    db_session.flush()
+
+    publisher = RecordingPublisher()
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(minutes=1),
+        publication_retry_interval=timedelta(seconds=30),
+    )
+
+    db_session.flush()
+    db_session.refresh(message)
+
+    assert result.published_count == 1
+    assert publisher.published_message_ids == [message.id]
+
+    assert message.status == "published"
+    assert message.lease_token == lease_token
+    assert message.lease_expires_at == lease_expires_at
+
+
+def test_dispatch_records_publication_failure_and_continues(
+    db_session: Session,
+) -> None:
+    first_delivery = create_delivery(db_session)
+    second_delivery = create_delivery(db_session)
+
+    failed_message = OutboxMessage(
+        delivery_id=first_delivery.id,
+    )
+
+    successful_message = OutboxMessage(
+        delivery_id=second_delivery.id,
+    )
+
+    db_session.add_all([failed_message, successful_message])
+    db_session.flush()
+
+    publisher = RecordingPublisher(
+        failing_message_ids={failed_message.id},
+    )
+
+    result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(seconds=30),
+        publication_retry_interval=timedelta(minutes=5),
+    )
+
+    db_session.flush()
+    db_session.refresh(failed_message)
+    db_session.refresh(successful_message)
+
+    assert result.published_count == 1
+    assert result.failed_count == 1
+
+    assert successful_message.id in publisher.published_message_ids
+    assert successful_message.status == "published"
+    assert successful_message.last_error is None
+
+    assert failed_message.id not in publisher.published_message_ids
+    assert failed_message.status == "pending"
+    assert failed_message.published_at is None
+    assert failed_message.last_error == "Message broker publication failed."
+    now = db_session.scalar(select(func.clock_timestamp()))
+
+    assert now is not None
+    assert failed_message.next_publish_at is not None
+    assert failed_message.next_publish_at > now
+
+    # A second dispatcher execution must skip the failed message.
+    previous_attempt_count = len(publisher.attempted_message_ids)
+
+    second_result = dispatch_outbox_messages(
+        db_session,
+        publisher,
+        batch_size=10,
+        recovery_interval=timedelta(seconds=30),
+        publication_retry_interval=timedelta(minutes=5),
+    )
+
+    assert second_result.published_count == 0
+    assert second_result.failed_count == 0
+    assert len(publisher.attempted_message_ids) == previous_attempt_count
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "recovery_interval", "publication_retry_interval"),
+    [
+        (0, timedelta(seconds=30), timedelta(seconds=30)),
+        (10, timedelta(0), timedelta(seconds=30)),
+        (10, timedelta(seconds=-1), timedelta(seconds=30)),
+        (10, timedelta(seconds=30), timedelta(0)),
+        (10, timedelta(seconds=30), timedelta(seconds=-1)),
+    ],
+)
+def test_dispatch_rejects_invalid_configuration(
+    db_session: Session,
+    batch_size: int,
+    recovery_interval: timedelta,
+    publication_retry_interval: timedelta,
+) -> None:
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ValueError):
+        dispatch_outbox_messages(
+            db_session,
+            publisher,
+            batch_size=batch_size,
+            recovery_interval=recovery_interval,
+            publication_retry_interval=publication_retry_interval,
+        )
